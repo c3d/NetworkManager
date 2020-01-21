@@ -74,13 +74,12 @@ typedef struct _NMDeviceEthernetPrivate {
 
 	struct {
 		NMSupplicantManager *mgr;
+		NMSupplMgrCreateIfaceHandle *create_handle;
 		NMSupplicantInterface *iface;
 
-		/* signal handler ids */
 		gulong iface_state_id;
 		gulong auth_state_id;
 
-		/* Timeouts and idles */
 		guint con_timeout_id;
 
 		guint timeout_id;
@@ -399,6 +398,8 @@ supplicant_interface_release (NMDeviceEthernet *self)
 {
 	NMDeviceEthernetPrivate *priv = NM_DEVICE_ETHERNET_GET_PRIVATE (self);
 
+	nm_clear_pointer (&priv->supplicant.create_handle, nm_supplicant_manager_create_interface_cancel);
+
 	nm_clear_g_source (&priv->supplicant.timeout_id);
 	nm_clear_g_source (&priv->supplicant.con_timeout_id);
 	nm_clear_g_signal_handler (priv->supplicant.iface, &priv->supplicant.iface_state_id);
@@ -630,6 +631,32 @@ supplicant_iface_assoc_cb (NMSupplicantInterface *iface,
 	}
 }
 
+static gboolean
+supplicant_iface_start (NMDeviceEthernet *self)
+{
+	NMDeviceEthernetPrivate *priv = NM_DEVICE_ETHERNET_GET_PRIVATE (self);
+	gs_unref_object NMSupplicantConfig *config = NULL;
+	gs_free_error GError *error = NULL;
+
+	config = build_supplicant_config (self, &error);
+	if (!config) {
+		_LOGE (LOGD_DEVICE | LOGD_ETHER,
+		       "Activation: (ethernet) couldn't build security configuration: %s",
+		       error->message);
+		supplicant_interface_release (self);
+		nm_device_state_changed (NM_DEVICE (self),
+		                         NM_DEVICE_STATE_FAILED,
+		                         NM_DEVICE_STATE_REASON_SUPPLICANT_CONFIG_FAILED);
+		return FALSE;
+	}
+
+	nm_supplicant_interface_assoc (priv->supplicant.iface,
+	                               config,
+	                               supplicant_iface_assoc_cb,
+	                               self);
+	return TRUE;
+}
+
 static void
 supplicant_iface_state_cb (NMSupplicantInterface *iface,
                            int new_state_i,
@@ -640,39 +667,27 @@ supplicant_iface_state_cb (NMSupplicantInterface *iface,
 	NMDeviceEthernet *self = NM_DEVICE_ETHERNET (user_data);
 	NMDeviceEthernetPrivate *priv = NM_DEVICE_ETHERNET_GET_PRIVATE (self);
 	NMDevice *device = NM_DEVICE (self);
-	NMSupplicantConfig *config;
-	NMDeviceState devstate;
-	GError *error = NULL;
 	NMSupplicantInterfaceState new_state = new_state_i;
 	NMSupplicantInterfaceState old_state = old_state_i;
-
-	if (new_state == old_state)
-		return;
 
 	_LOGI (LOGD_DEVICE | LOGD_ETHER, "supplicant interface state: %s -> %s",
 	       nm_supplicant_interface_state_to_string (old_state),
 	       nm_supplicant_interface_state_to_string (new_state));
 
-	devstate = nm_device_get_state (device);
+	if (new_state == NM_SUPPLICANT_INTERFACE_STATE_DOWN) {
+		supplicant_interface_release (self);
+		if (   nm_device_get_state (device) == NM_DEVICE_STATE_ACTIVATED
+		    || nm_device_is_activating (device))
+			wired_auth_cond_fail (self, NM_DEVICE_STATE_REASON_SUPPLICANT_FAILED);
+		return;
+	}
+
+	if (old_state == NM_SUPPLICANT_INTERFACE_STATE_STARTING) {
+		if (!supplicant_iface_start (self))
+			return;
+	}
 
 	switch (new_state) {
-	case NM_SUPPLICANT_INTERFACE_STATE_READY:
-		config = build_supplicant_config (self, &error);
-		if (config) {
-			nm_supplicant_interface_assoc (priv->supplicant.iface, config,
-			                               supplicant_iface_assoc_cb, self);
-			g_object_unref (config);
-		} else {
-			_LOGE (LOGD_DEVICE | LOGD_ETHER,
-			       "Activation: (ethernet) couldn't build security configuration: %s",
-			       error->message);
-			g_clear_error (&error);
-
-			nm_device_state_changed (device,
-			                         NM_DEVICE_STATE_FAILED,
-			                         NM_DEVICE_STATE_REASON_SUPPLICANT_CONFIG_FAILED);
-		}
-		break;
 	case NM_SUPPLICANT_INTERFACE_STATE_COMPLETED:
 		nm_clear_g_source (&priv->supplicant.timeout_id);
 		nm_clear_g_source (&priv->supplicant.con_timeout_id);
@@ -680,24 +695,19 @@ supplicant_iface_state_cb (NMSupplicantInterface *iface,
 		/* If this is the initial association during device activation,
 		 * schedule the next activation stage.
 		 */
-		if (devstate == NM_DEVICE_STATE_CONFIG) {
+		if (nm_device_get_state (device) == NM_DEVICE_STATE_CONFIG) {
 			_LOGI (LOGD_DEVICE | LOGD_ETHER,
 			       "Activation: (ethernet) Stage 2 of 5 (Device Configure) successful.");
 			nm_device_activate_schedule_stage3_ip_config_start (device);
 		}
 		break;
 	case NM_SUPPLICANT_INTERFACE_STATE_DISCONNECTED:
-		if ((devstate == NM_DEVICE_STATE_ACTIVATED) || nm_device_is_activating (device)) {
+		if (   nm_device_get_state (device) == NM_DEVICE_STATE_ACTIVATED
+		    || nm_device_is_activating (device)) {
 			/* Start the link timeout so we allow some time for reauthentication */
 			if (!priv->supplicant.timeout_id)
 				priv->supplicant.timeout_id = g_timeout_add_seconds (15, link_timeout_cb, device);
 		}
-		break;
-	case NM_SUPPLICANT_INTERFACE_STATE_DOWN:
-		supplicant_interface_release (self);
-
-		if ((devstate == NM_DEVICE_STATE_ACTIVATED) || nm_device_is_activating (device))
-			wired_auth_cond_fail (self, NM_DEVICE_STATE_REASON_SUPPLICANT_FAILED);
 		break;
 	default:
 		break;
@@ -776,37 +786,51 @@ supplicant_connection_timeout_cb (gpointer user_data)
 	return FALSE;
 }
 
-static gboolean
-supplicant_interface_init (NMDeviceEthernet *self)
+static void
+supplicant_interface_create_cb (NMSupplicantManager *supplicant_manager,
+                                NMSupplMgrCreateIfaceHandle *handle,
+                                NMSupplicantInterface *iface,
+                                GError *error,
+                                gpointer user_data)
 {
-	NMDeviceEthernetPrivate *priv = NM_DEVICE_ETHERNET_GET_PRIVATE (self);
+	NMDeviceEthernet *self;
+	NMDeviceEthernetPrivate *priv;
 	guint timeout;
 
-	supplicant_interface_release (self);
+	if (nm_utils_error_is_cancelled (error))
+		return;
 
-	priv->supplicant.iface = nm_supplicant_manager_create_interface (priv->supplicant.mgr,
-	                                                                 nm_device_get_iface (NM_DEVICE (self)),
-	                                                                 NM_SUPPLICANT_DRIVER_WIRED);
+	self = user_data;
+	priv = NM_DEVICE_ETHERNET_GET_PRIVATE (self);
 
-	if (!priv->supplicant.iface) {
+	nm_assert (priv->supplicant.create_handle == handle);
+	priv->supplicant.create_handle = NULL;
+
+	if (error) {
 		_LOGE (LOGD_DEVICE | LOGD_ETHER,
-		       "Couldn't initialize supplicant interface");
-		return FALSE;
+		       "Couldn't initialize supplicant interface: %s",
+		       error->message);
+		supplicant_interface_release (self);
+		nm_device_state_changed (NM_DEVICE (self),
+		                         NM_DEVICE_STATE_FAILED,
+		                         NM_DEVICE_STATE_REASON_SUPPLICANT_FAILED);
+		return;
 	}
 
-	/* Listen for its state signals */
+	priv->supplicant.iface = g_object_ref (iface);
+
 	priv->supplicant.iface_state_id = g_signal_connect (priv->supplicant.iface,
 	                                                    NM_SUPPLICANT_INTERFACE_STATE,
 	                                                    G_CALLBACK (supplicant_iface_state_cb),
 	                                                    self);
 
-	/* Set up a timeout on the connection attempt */
 	timeout = nm_device_get_supplicant_timeout (NM_DEVICE (self));
 	priv->supplicant.con_timeout_id = g_timeout_add_seconds (timeout,
 	                                                         supplicant_connection_timeout_cb,
 	                                                         self);
 
-	return TRUE;
+	if (NM_SUPPLICANT_INTERFACE_STATE_IS_OPERATIONAL (nm_supplicant_interface_get_state (iface)))
+		supplicant_iface_start (self);
 }
 
 static NMPlatformLinkDuplexType
@@ -973,18 +997,21 @@ supplicant_check_secrets_needed (NMDeviceEthernet *self, NMDeviceStateReason *ou
 		ret = handle_auth_or_fail (self, req, FALSE);
 		if (ret != NM_ACT_STAGE_RETURN_POSTPONE)
 			NM_SET_OUT (out_failure_reason, NM_DEVICE_STATE_REASON_NO_SECRETS);
-	} else {
-		_LOGI (LOGD_DEVICE | LOGD_ETHER,
-		       "Activation: (ethernet) connection '%s' requires no security. No secrets needed.",
-		       nm_connection_get_id (connection));
-
-		if (supplicant_interface_init (self))
-			ret = NM_ACT_STAGE_RETURN_POSTPONE;
-		else
-			NM_SET_OUT (out_failure_reason, NM_DEVICE_STATE_REASON_CONFIG_FAILED);
+		return ret;
 	}
 
-	return ret;
+	_LOGI (LOGD_DEVICE | LOGD_ETHER,
+	       "Activation: (ethernet) connection '%s' requires no security. No secrets needed.",
+	       nm_connection_get_id (connection));
+
+	supplicant_interface_release (self);
+
+	priv->supplicant.create_handle = nm_supplicant_manager_create_interface (priv->supplicant.mgr,
+	                                                                         nm_device_get_ifindex (NM_DEVICE (self)),
+	                                                                         NM_SUPPLICANT_DRIVER_WIRED,
+	                                                                         supplicant_interface_create_cb,
+	                                                                         self);
+	return NM_ACT_STAGE_RETURN_POSTPONE;
 }
 
 static void
