@@ -65,3 +65,7 @@ global:
 local:
        *;
 };
+
+LIBNDHCP4_2 {
+        n_dhcp4_client_probe_config_set_max_attempts;
+} LIBNDHCP4_1;

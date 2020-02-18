@@ -1045,38 +1045,32 @@ static int n_dhcp4_c_connection_send_request(NDhcp4CConnection *connection,
         case N_DHCP4_C_MESSAGE_REBIND:
                 broadcast = true;
                 r = n_dhcp4_c_connection_packet_broadcast(connection, request);
-                if (r)
-                        return r;
                 break;
         case N_DHCP4_C_MESSAGE_INFORM:
                 broadcast = true;
                 r = n_dhcp4_c_connection_udp_broadcast(connection, request);
-                if (r)
-                        return r;
-
                 break;
         case N_DHCP4_C_MESSAGE_RENEW:
         case N_DHCP4_C_MESSAGE_RELEASE:
                 r = n_dhcp4_c_connection_udp_send(connection, request);
-                if (r)
-                        return r;
-
                 break;
         default:
                 c_assert(0);
         }
 
         if (request->userdata.client_addr == INADDR_ANY) {
-                n_dhcp4_c_log(connection->client_config, LOG_INFO,
-                              "sent %s to %s",
+                n_dhcp4_c_log(connection->client_config,
+                              LOG_INFO,
+                              "sending %s to %s",
                               message_type_to_str(request->userdata.message_type),
                               broadcast ?
                               "255.255.255.255" :
                               inet_ntop(AF_INET, &connection->server_ip,
                                         server_addr, sizeof(server_addr)));
         } else {
-                n_dhcp4_c_log(connection->client_config, LOG_INFO,
-                              "sent %s of %s to %s",
+                n_dhcp4_c_log(connection->client_config,
+                              LOG_INFO,
+                              "sending %s of %s to %s",
                               message_type_to_str(request->userdata.message_type),
                               inet_ntop(AF_INET, &request->userdata.client_addr,
                                         client_addr, sizeof(client_addr)),
@@ -1086,8 +1080,26 @@ static int n_dhcp4_c_connection_send_request(NDhcp4CConnection *connection,
                                         server_addr, sizeof(server_addr)));
         }
 
+        if (r) {
+                if (connection->attempts < UINT_MAX)
+                        connection->attempts++;
+
+                n_dhcp4_c_log(connection->client_config,
+                              LOG_WARNING,
+                              "error %d sending %s (attempt %u)",
+                              r,
+                              message_type_to_str(request->userdata.message_type),
+                              connection->attempts);
+
+                if (connection->probe_config->max_attempts == 0 ||
+                    connection->attempts < connection->probe_config->max_attempts) {
+                        /* ignore the error */
+                        r = 0;
+                }
+        }
+
         ++request->userdata.n_send;
-        return 0;
+        return r;
 }
 
 int n_dhcp4_c_connection_start_request(NDhcp4CConnection *connection,
@@ -1105,6 +1117,7 @@ int n_dhcp4_c_connection_start_request(NDhcp4CConnection *connection,
                 request->userdata.start_time = timestamp;
 
         connection->request = n_dhcp4_outgoing_free(connection->request);
+        connection->attempts = 0;
 
         r = n_dhcp4_c_connection_send_request(connection, request, timestamp);
         if (r)

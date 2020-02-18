@@ -116,6 +116,7 @@ int n_dhcp4_client_probe_config_dup(NDhcp4ClientProbeConfig *config,
 
         dup->inform_only = config->inform_only;
         dup->init_reboot = config->init_reboot;
+        dup->max_attempts = config->max_attempts;
         dup->requested_ip = config->requested_ip;
         dup->ms_start_delay = config->ms_start_delay;
 
@@ -188,6 +189,21 @@ _c_public_ void n_dhcp4_client_probe_config_set_inform_only(NDhcp4ClientProbeCon
  */
 _c_public_ void n_dhcp4_client_probe_config_set_init_reboot(NDhcp4ClientProbeConfig *config, bool init_reboot) {
         config->init_reboot = init_reboot;
+}
+
+/**
+ * n_dhcp4_client_probe_config_set_max_attempts() - set max-attempts property
+ * @config:                     configuration to operate on
+ * @max_attempts:               the maximum number of attempts
+ *
+ * This sets the max-attempts property of the given configuration object, which
+ * specifies how many attempts will be performed to send each request in case
+ * of failure before giving up.
+ *
+ * The default value is 0, which equivalent to an infinite number of attempts.
+ */
+_c_public_ void n_dhcp4_client_probe_config_set_max_attempts(NDhcp4ClientProbeConfig *config, unsigned int max_attempts) {
+        config->max_attempts = max_attempts;
 }
 
 /**

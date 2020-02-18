@@ -266,6 +266,7 @@ struct NDhcp4ClientProbeOption {
 struct NDhcp4ClientProbeConfig {
         bool inform_only;
         bool init_reboot;
+        unsigned int max_attempts;
         struct in_addr requested_ip;
         struct drand48_data entropy;    /* entropy pool */
         uint64_t ms_start_delay;        /* max ms to wait before starting probe */
@@ -296,6 +297,7 @@ struct NDhcp4CConnection {
         int fd_epoll;
 
         unsigned int state;             /* current connection state */
+        unsigned int attempts;          /* number of send attempts */
         int fd_packet;                  /* packet socket */
         int fd_udp;                     /* udp socket */
 
