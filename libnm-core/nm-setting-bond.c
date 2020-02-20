@@ -758,6 +758,31 @@ verify (NMSetting *setting, NMConnection *connection, GError **error)
 			g_prefix_error (error, "%s.%s: ", NM_SETTING_BOND_SETTING_NAME, NM_SETTING_BOND_OPTIONS);
 			return FALSE;
 		}
+	} else {
+		gpointer delayopt = NULL;
+
+		/* updelay and downdelay need miimon to be enabled to be valid */
+		delayopt = g_hash_table_lookup (priv->options, NM_SETTING_BOND_OPTION_UPDELAY);
+		if (delayopt && atoi (delayopt) > 0) {
+			g_set_error (error,
+			             NM_CONNECTION_ERROR,
+			             NM_CONNECTION_ERROR_INVALID_PROPERTY,
+			             _("'%s' option requires '%s' option to be set"),
+			             NM_SETTING_BOND_OPTION_UPDELAY, NM_SETTING_BOND_OPTION_MIIMON);
+			g_prefix_error (error, "%s.%s: ", NM_SETTING_BOND_SETTING_NAME, NM_SETTING_BOND_OPTIONS);
+			return FALSE;
+		}
+
+		delayopt = g_hash_table_lookup (priv->options, NM_SETTING_BOND_OPTION_DOWNDELAY);
+		if (delayopt && atoi (delayopt) > 0) {
+			g_set_error (error,
+			             NM_CONNECTION_ERROR,
+			             NM_CONNECTION_ERROR_INVALID_PROPERTY,
+			             _("'%s' option requires '%s' option to be set"),
+			             NM_SETTING_BOND_OPTION_DOWNDELAY, NM_SETTING_BOND_OPTION_MIIMON);
+			g_prefix_error (error, "%s.%s: ", NM_SETTING_BOND_SETTING_NAME, NM_SETTING_BOND_OPTIONS);
+			return FALSE;
+		}
 	}
 
 	/* arp_ip_target can only be used with arp_interval, and must
