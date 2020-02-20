@@ -738,8 +738,8 @@ verify (NMSetting *setting, NMConnection *connection, GError **error)
 		}
 	}
 
-	if (miimon == 0) {
-		/* updelay and downdelay can only be used with miimon */
+	if (miimon > 0) {
+		/* updelay and downdelay can only be set when miimon is enabled */
 		if (g_hash_table_lookup (priv->options, NM_SETTING_BOND_OPTION_UPDELAY)) {
 			g_set_error (error,
 			             NM_CONNECTION_ERROR,
